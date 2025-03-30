@@ -48,14 +48,14 @@ class FinalStockEditor(App):
         Window.clearcolor = get_color_from_hex('#f5f5f5')
 
     def build(self):
-        # Main layout (keeping original dimensions)
+        # Main layout
         self.layout = BoxLayout(
             orientation='vertical',
             spacing=dp(10),
             padding=dp(15),
         )
         
-        # --- Header --- (unchanged)
+        # --- Header ---
         header = BoxLayout(size_hint=(1, None), height=dp(50))
         self.category_spinner = Spinner(
             text='Select Product Category',
@@ -68,7 +68,7 @@ class FinalStockEditor(App):
         header.add_widget(self.category_spinner)
         self.layout.add_widget(header)
         
-        # --- Product Display --- (unchanged)
+        # --- Product Display ---
         self.product_image = AsyncImage(
             size_hint=(1, None),
             height=dp(200),
@@ -84,11 +84,10 @@ class FinalStockEditor(App):
             spacing=dp(5),
         )
         
-        # ONLY CHANGED THIS LABEL (product title)
         self.product_label = Label(
-            text="[size=24][b]Select a category[/b][/size]",  # Changed from 18 to 24
+            text="[size=22][b]Select a category[/b][/size]",  # Updated from 18 to 22
             size_hint=(1, None),
-            height=dp(50),  # Slightly increased height
+            height=dp(40),
             halign='center',
             valign='middle',
             markup=True,
@@ -96,7 +95,7 @@ class FinalStockEditor(App):
         )
         stock_display.add_widget(self.product_label)
         
-        # Current Stock (unchanged)
+        # Current Stock
         self.stock_display = Label(
             text="[size=36][b]Stock: 0[/b][/size]",
             size_hint=(1, None),
@@ -107,7 +106,7 @@ class FinalStockEditor(App):
         )
         stock_display.add_widget(self.stock_display)
         
-        # Reserved Stock (unchanged)
+        # Reserved Stock
         self.reserved_display = Label(
             text="[size=24][b]Reserved: 0[/b][/size]",
             size_hint=(1, None),
@@ -120,13 +119,126 @@ class FinalStockEditor(App):
         
         self.layout.add_widget(stock_display)
         
-        # --- Rest of the code remains EXACTLY THE SAME ---
-        # [Previous button, navigation, and all other code unchanged]
-        # ...
+        # --- Stock Controls ---
+        ctrl_box = BoxLayout(
+            size_hint=(1, None),
+            height=dp(60),
+            spacing=dp(10),
+        )
+        
+        self.decrease_btn = Button(
+            text="[size=24]−1[/size]",
+            size_hint=(0.5, 1),
+            background_color=get_color_from_hex('#ff5252'),
+            color=(1, 1, 1, 1),
+            markup=True,
+            font_size=dp(24))
+        
+        self.increase_btn = Button(
+            text="[size=24]+1[/size]",
+            size_hint=(0.5, 1),
+            background_color=get_color_from_hex('#4CAF50'),
+            color=(1, 1, 1, 1),
+            markup=True,
+            font_size=dp(24))
+        
+        ctrl_box.add_widget(self.decrease_btn)
+        ctrl_box.add_widget(self.increase_btn)
+        self.layout.add_widget(ctrl_box)
+        
+        # --- Navigation ---
+        nav_box = BoxLayout(
+            size_hint=(1, None),
+            height=dp(50),
+            spacing=dp(10),
+        )
+        
+        self.prev_btn = Button(
+            text="← Previous",
+            size_hint=(0.4, 1),
+            font_size=dp(14),
+            background_color=get_color_from_hex('#607D8B'),
+            color=(1, 1, 1, 1))
+        
+        self.next_btn = Button(
+            text="Next →",
+            size_hint=(0.4, 1),
+            font_size=dp(14),
+            background_color=get_color_from_hex('#607D8B'),
+            color=(1, 1, 1, 1))
+        
+        nav_box.add_widget(self.prev_btn)
+        nav_box.add_widget(Label(size_hint=(0.2, 1)))  # Spacer
+        nav_box.add_widget(self.next_btn)
+        self.layout.add_widget(nav_box)
+        
+        # --- Pagination ---
+        page_box = BoxLayout(
+            size_hint=(1, None),
+            height=dp(40),
+            spacing=dp(5),
+        )
+        
+        self.prev_page_btn = Button(
+            text="◀ Prev Page",
+            size_hint=(0.3, 1),
+            font_size=dp(12),
+            background_normal='',
+            background_color=get_color_from_hex('#78909C'))
+        
+        self.page_label = Label(
+            text="Page 1/1",
+            size_hint=(0.4, 1),
+            halign='center',
+            font_size=dp(14),
+            color=(0, 0, 0, 0.7))
+        
+        self.next_page_btn = Button(
+            text="Next Page ▶",
+            size_hint=(0.3, 1),
+            font_size=dp(12),
+            background_normal='',
+            background_color=get_color_from_hex('#78909C'))
+        
+        page_box.add_widget(self.prev_page_btn)
+        page_box.add_widget(self.page_label)
+        page_box.add_widget(self.next_page_btn)
+        self.layout.add_widget(page_box)
+        
+        # --- Status Bar ---
+        self.status_bar = Label(
+            text="Ready",
+            size_hint=(1, None),
+            height=dp(30),
+            font_size=dp(12),
+            color=(0, 0, 0, 0.6))
+        
+        self.layout.add_widget(self.status_bar)
+        
+        # Progress bar
+        self.progress = ProgressBar(
+            size_hint=(1, None),
+            height=dp(4),
+            max=100,
+            value=0)
+        
+        self.layout.add_widget(self.progress)
+        
+        # Bind buttons
+        self.decrease_btn.bind(on_press=lambda x: self.update_stock(-1))
+        self.increase_btn.bind(on_press=lambda x: self.update_stock(1))
+        self.prev_btn.bind(on_press=lambda x: self.change_product(-1))
+        self.next_btn.bind(on_press=lambda x: self.change_product(1))
+        self.prev_page_btn.bind(on_press=lambda x: self.change_page(-1))
+        self.next_page_btn.bind(on_press=lambda x: self.change_page(1))
+        
+        # Initialize
+        Clock.schedule_once(lambda dt: self.load_reserved_stock())
+        Clock.schedule_once(lambda dt: self.load_categories())
+        self.category_spinner.bind(text=self.on_category_selected)
         
         return self.layout
 
-    # ALL OTHER METHODS REMAIN UNCHANGED
     def load_reserved_stock(self):
         """Load reserved stock data from Excel file using openpyxl"""
         try:
@@ -208,7 +320,7 @@ class FinalStockEditor(App):
             self.show_current_product()
             self.status_bar.text = f"Loaded {len(products)} products"
         else:
-            self.product_label.text = "[size=24][b]No products found[/b][/size]"  # Updated size here too
+            self.product_label.text = "[size=22][b]No products found[/b][/size]"  # Updated size
             self.stock_display.text = "[size=36][b]Stock: -[/b][/size]"
             self.reserved_display.text = "[size=24][b]Reserved: -[/b][/size]"
             self.product_image.source = ''
@@ -216,7 +328,7 @@ class FinalStockEditor(App):
 
     def show_current_product(self):
         product = self.products[self.current_index]
-        self.product_label.text = f"[size=24][b]{product['name']}[/b][/size]"  # Consistent 24 size
+        self.product_label.text = f"[size=22][b]{product['name']}[/b][/size]"  # Updated size
         self.stock_display.text = f"[size=36][b]Stock: {product.get('stock_quantity', 0)}[/b][/size]"
         
         # Show reserved stock if available
