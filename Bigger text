@@ -79,15 +79,15 @@ class FinalStockEditor(App):
         # --- Stock Display ---
         stock_display = BoxLayout(
             size_hint=(1, None),
-            height=dp(130),  # Increased height to accommodate larger title
+            height=dp(150),  # Increased height for larger title
             orientation='vertical',
             spacing=dp(5),
         )
         
         self.product_label = Label(
-            text="[size=28][b]Select a category[/b][/size]",  # Updated to size=28
+            text="[size=36][b]Select a category[/b][/size]",  # Size 36
             size_hint=(1, None),
-            height=dp(50),  # Increased height
+            height=dp(60),  # Increased height
             halign='center',
             valign='middle',
             markup=True,
@@ -320,7 +320,7 @@ class FinalStockEditor(App):
             self.show_current_product()
             self.status_bar.text = f"Loaded {len(products)} products"
         else:
-            self.product_label.text = "[size=28][b]No products found[/b][/size]"  # Updated size
+            self.product_label.text = "[size=36][b]No products found[/b][/size]"  # Size 36
             self.stock_display.text = "[size=36][b]Stock: -[/b][/size]"
             self.reserved_display.text = "[size=24][b]Reserved: -[/b][/size]"
             self.product_image.source = ''
@@ -328,7 +328,7 @@ class FinalStockEditor(App):
 
     def show_current_product(self):
         product = self.products[self.current_index]
-        self.product_label.text = f"[size=28][b]{product['name']}[/b][/size]"  # Updated size
+        self.product_label.text = f"[size=36][b]{product['name']}[/b][/size]"  # Size 36
         self.stock_display.text = f"[size=36][b]Stock: {product.get('stock_quantity', 0)}[/b][/size]"
         
         # Show reserved stock if available
