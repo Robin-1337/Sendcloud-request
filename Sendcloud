@@ -1,4 +1,6 @@
+# -*- coding: utf-8 -*-
 import requests
+import json
 from datetime import datetime, timedelta
 from openpyxl import Workbook
 from openpyxl.styles import Font
@@ -6,360 +8,398 @@ import os
 import platform
 import subprocess
 from woocommerce import API
-import tkinter as tk
-from tkinter import messagebox
-import json
-import base64
 import sys
+import logging
+from typing import List, Dict, Tuple, Optional
 
-# WooCommerce API credentials
-store_url = "https://www.despelvogel.com"
-consumer_key = "placeholder"
-consumer_secret = "placeholder
-preorder_category_id = 18  # Category ID for pre-orders
-xlsx_file_path = 'open_orders_filtered.xlsx'
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger(__name__)
 
-# SendCloud API credentials
-SENDCLOUD_PUBLIC_KEY = "4826ac49-c7c2-4009-9f6a-232784edcda0"
-SENDCLOUD_SECRET_KEY = "7d2b56b941f44b14804a4bac95eac872"
-SENDCLOUD_API_URL = "https://panel.sendcloud.sc/api/v2/"
+class Config:
+    # WooCommerce credentials
+    STORE_URL = "https://www.despelvogel.com"
+    CONSUMER_KEY = "Placeholder"
+    CONSUMER_SECRET = "Placeholder"
+    PREORDER_CATEGORY_ID = 18
+    
+    # Sendcloud credentials
+    SENDCLOUD_PUBLIC = "placeholder"
+    SENDCLOUD_SECRET = "placeholder"
+    SENDCLOUD_INTEGRATION_ID = 209957
+    
+    # Customs information
+    DEFAULT_HS_CODE = "95049090"
+    DEFAULT_ORIGIN_COUNTRY = "CN"
+    
+    # File paths
+    XLSX_FILE_PATH = 'open_orders_filtered.xlsx'
+    DAYS_TO_FETCH = 5
+    ITEMS_PER_PAGE = 100
+    MIN_WEIGHT = 0.001
 
-# Initialize WooCommerce API
+# Initialize APIs
 wcapi = API(
-    url=store_url,
-    consumer_key=consumer_key,
-    consumer_secret=consumer_secret,
-    version="wc/v3"
+    url=Config.STORE_URL,
+    consumer_key=Config.CONSUMER_KEY,
+    consumer_secret=Config.CONSUMER_SECRET,
+    version="wc/v3",
+    timeout=30
 )
 
-# Constants for date ranges
-forty_eight_hours_ago = datetime.now() - timedelta(hours=48)
-two_days_ago = datetime.now() - timedelta(days=2)
-
-# Fetch processing orders from the last 5 days with pagination
-def fetch_processing_orders(store_url, consumer_key, consumer_secret):
-    five_days_ago = (datetime.now() - timedelta(days=5)).isoformat()
-    endpoint = f"{store_url}/wp-json/wc/v3/orders"
-    all_orders = []
-    page = 1
-    while True:
-        params = {
-            'after': five_days_ago,
-            'status': 'processing',
-            'per_page': 100,
-            'page': page,
-            'consumer_key': consumer_key,
-            'consumer_secret': consumer_secret
-        }
-        response = requests.get(endpoint, params=params)
-        response.raise_for_status()
-        orders = response.json()
-        if not orders:
-            break
-        all_orders.extend(orders)
-        page += 1
-    print(f"Fetched {len(all_orders)} processing orders from API")
-    return all_orders
-
-# Fetch product details in batches to reduce API calls
-def fetch_product_details_in_batches(product_ids, store_url, consumer_key, consumer_secret):
-    product_details = {}
-    batch_size = 100
-    for i in range(0, len(product_ids), batch_size):
-        batch = product_ids[i:i + batch_size]
-        endpoint = f"{store_url}/wp-json/wc/v3/products"
-        params = {
-            'include': ','.join(map(str, batch)),
-            'per_page': len(batch),
-            'consumer_key': consumer_key,
-            'consumer_secret': consumer_secret
-        }
-        response = requests.get(endpoint, params=params)
-        response.raise_for_status()
-        products = response.json()
-        for product in products:
-            product_details[product['id']] = product
-    return product_details
-
-# Filter orders to exclude pre-orders and gather relevant product details
-def filter_orders(orders, product_details, preorder_category_id):
-    filtered_orders = []
-    for order in orders:
-        contains_preorder = False
-        order_details = []
-        klant_opmerking = order.get('customer_note', '')  
-        for item in order.get('line_items', []):
-            product_id = item.get('product_id')
-            product_name = item.get('name')
-            quantity = item.get('quantity')
-            product = product_details.get(product_id, {})
-            stock_quantity = product.get('stock_quantity', 'unknown')
-            if stock_quantity is None:
-                stock_quantity = 0  
-            product_categories = [category['id'] for category in product.get('categories', [])]
-            if preorder_category_id in product_categories:
-                contains_preorder = True
+def fetch_processing_orders() -> List[Dict]:
+    """Fetch processing orders from the last N days."""
+    try:
+        date_cutoff = (datetime.now() - timedelta(days=Config.DAYS_TO_FETCH)).isoformat()
+        all_orders = []
+        page = 1
+        
+        logger.info("Fetching processing orders...")
+        
+        while True:
+            response = wcapi.get("orders", params={
+                'after': date_cutoff,
+                'status': 'processing',
+                'per_page': Config.ITEMS_PER_PAGE,
+                'page': page
+            })
+            
+            if response.status_code != 200:
+                raise Exception(f"API request failed with status {response.status_code}")
+                
+            orders = response.json()
+            if not orders:
                 break
+                
+            all_orders.extend(orders)
+            page += 1
+            
+        logger.info(f"Fetched {len(all_orders)} processing orders")
+        return all_orders
+        
+    except Exception as e:
+        logger.error(f"Error fetching orders: {e}")
+        raise
 
-            # Extract metadata like "sleeves" only
-            metadata = item.get('meta_data', [])
-            sleeve_metadata = []
-            for meta in metadata:
-                if "sleeve" in meta.get('key', '').lower():
-                    sleeve_metadata.append(f"{meta.get('key', '')}: {meta.get('value', '')}")
+def fetch_product_details(product_ids: List[int]) -> Dict[int, Dict]:
+    """Fetch details for multiple products in batches."""
+    try:
+        product_details = {}
+        if not product_ids:
+            return product_details
+            
+        logger.info(f"Fetching details for {len(product_ids)} products...")
+        
+        # Process in batches
+        for i in range(0, len(product_ids), Config.ITEMS_PER_PAGE):
+            batch = product_ids[i:i + Config.ITEMS_PER_PAGE]
+            response = wcapi.get("products", params={
+                'include': ','.join(map(str, batch)),
+                'per_page': len(batch)
+            })
+            
+            if response.status_code != 200:
+                raise Exception(f"Product API request failed with status {response.status_code}")
+                
+            for product in response.json():
+                product_details[product['id']] = product
+                
+        return product_details
+        
+    except Exception as e:
+        logger.error(f"Error fetching product details: {e}")
+        raise
 
-            # Join metadata into a readable string
-            metadata_string = ", ".join(sleeve_metadata)
+def is_gift_coupon(product: Dict) -> bool:
+    """Check if product is a gift coupon."""
+    categories = [cat['name'].lower() for cat in product.get('categories', [])]
+    return any("gift" in c or "coupon" in c for c in categories)
 
-            order_details.append((product_name, quantity, stock_quantity, product_id, metadata_string))
-        if not contains_preorder:
-            filtered_orders.append((order['billing']['first_name'] + ' ' + order['billing']['last_name'], order['id'], order_details, klant_opmerking))
+def filter_orders(orders: List[Dict], product_details: Dict[int, Dict]) -> List[Tuple]:
+    """Filter out orders containing pre-order or gift items."""
+    filtered_orders = []
+    
+    for order in orders:
+        exclude = False
+        order_lines = []
+        customer_note = order.get('customer_note', '')
+        
+        for item in order.get('line_items', []):
+            product = product_details.get(item.get('product_id'), {})
+            if not product:
+                continue
+                
+            # Check for pre-order items
+            if Config.PREORDER_CATEGORY_ID in [cat['id'] for cat in product.get('categories', [])]:
+                exclude = True
+                
+            # Check for gift coupons
+            if is_gift_coupon(product):
+                exclude = True
+                
+            order_lines.append((
+                item.get('name'),
+                item.get('quantity'),
+                item.get('product_id')
+            ))
+            
+        if not exclude:
+            filtered_orders.append((order, order_lines, customer_note))
+            
+    logger.info(f"Filtered down to {len(filtered_orders)} orders")
     return filtered_orders
 
-# Prepare data for Excel
-def prepare_data_for_excel(orders, out_of_stock_products):
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "Open Orders"
-
-    # Add headers
-    sheet.append(['Naam', 'ID', 'Product', 'Aantal', 'Klant Opmerking'])
-
-    out_of_stock_names = {product['name'] for product in out_of_stock_products}
-
-    for customer_name, order_number, products, klant_opmerking in orders:
-        first_product = True
-        for product_name, quantity, stock_quantity, product_id, metadata_string in products:
-            # Add the product
-            if first_product:
-                row = [customer_name, order_number, product_name, quantity, klant_opmerking]
-                first_product = False
-            else:
-                row = ["", "", product_name, quantity, ""]
-            sheet.append(row)
-
-            # Highlight out-of-stock products
-            if stock_quantity == 0 or product_name in out_of_stock_names:
-                for cell in sheet[f"C{sheet.max_row}:E{sheet.max_row}"][0]:
-                    cell.font = Font(color="FF0000", bold=True)
-
-            # Add metadata (e.g., "sleeves") under product in Column C
-            if metadata_string:
-                sheet.append(["", "", f"  - {metadata_string}", "", ""])
-
-            # Bold the quantity cell if greater than 1
-            if quantity > 1:
-                quantity_cell = sheet.cell(row=sheet.max_row - (1 if metadata_string else 0), column=4)
-                quantity_cell.font = Font(bold=True, underline="single")
-
-        # Add a blank row after each order
-        sheet.append(["", "", "", "", ""])
-
-    # Adjust column widths to fit contents in the sheet
-    for column in sheet.columns:
-        max_length = 0
-        column_letter = column[0].column_letter
-        for cell in column:
-            if cell.value:
-                max_length = max(max_length, len(str(cell.value)))
-        adjusted_width = max_length + 2
-        sheet.column_dimensions[column_letter].width = adjusted_width
-
-    return workbook
-
-# Save and handle file permissions
-def save_excel_file(workbook, file_path):
+def prepare_excel(orders: List[Tuple]) -> Workbook:
+    """Generate Excel workbook with order data."""
     try:
-        print("Saving the Excel file...")
-        # Check if file exists and delete it to avoid permission issues
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Open Orders"
+        
+        # Header row with bold font
+        headers = ['Naam', 'Order Number', 'Product', 'Aantal', 'Klant Opmerking']
+        sheet.append(headers)
+        
+        for cell in sheet[1]:
+            cell.font = Font(bold=True)
+        
+        # Add order data
+        for order, lines, customer_note in orders:
+            name = f"{order['billing']['first_name']} {order['billing']['last_name']}"
+            order_number = order['number']
+            first = True
+            
+            for product_name, qty, _ in lines:
+                row = [
+                    name if first else "",
+                    order_number if first else "",
+                    product_name,
+                    qty,
+                    customer_note if first else ""
+                ]
+                sheet.append(row)
+                first = False
+                
+            sheet.append(["", "", "", "", ""])  # Add empty row between orders
+        
+        # Auto-size columns
+        for col in sheet.columns:
+            max_len = max(len(str(cell.value)) if cell.value else 0 for cell in col)
+            sheet.column_dimensions[col[0].column_letter].width = max_len + 2
+            
+        return workbook
+        
+    except Exception as e:
+        logger.error(f"Error preparing Excel: {e}")
+        raise
+
+def save_and_open_excel(workbook: Workbook, file_path: str):
+    """Save workbook and attempt to open it."""
+    try:
         if os.path.exists(file_path):
             os.remove(file_path)
-        # Save workbook
+            
         workbook.save(file_path)
-        print(f"File saved to {file_path}")
-    except Exception as e:
-        print(f"Error while saving the Excel file: {e}")
-        sys.exit(1)  # Exit if file save fails
-
-def open_excel_file(file_path):
-    try:
-        if os.path.exists(file_path):
-            print("Opening the Excel file...")
-            if platform.system() == "Windows":
-                os.startfile(file_path)
-            elif platform.system() == "Darwin":  
-                subprocess.call(["open", file_path])
-            else:  
-                subprocess.call(["xdg-open", file_path])
+        logger.info(f"Excel saved to: {file_path}")
+        
+        # Open the file
+        if platform.system() == "Windows":
+            os.startfile(file_path)
+        elif platform.system() == "Darwin":
+            subprocess.call(["open", file_path])
         else:
-            print(f"File {file_path} does not exist.")
+            subprocess.call(["xdg-open", file_path])
+            
     except Exception as e:
-        print(f"Error while opening the file: {e}")
-        sys.exit(1)  # Exit if file open fails
+        logger.error(f"Could not open Excel file: {e}")
 
-# Function to create labels using SendCloud API
-def create_labels_sendcloud(order_ids):
-    """
-    Create shipping labels for the given order IDs using the SendCloud API.
-    """
+def fetch_shipment_data(order_number: str) -> Optional[Dict]:
+    """Fetch shipment data from Sendcloud."""
     try:
-        # Endpoint for creating labels
-        endpoint = f"{SENDCLOUD_API_URL}labels"
+        url = f"https://panel.sendcloud.sc/api/v2/integrations/{Config.SENDCLOUD_INTEGRATION_ID}/shipments"
+        auth = (Config.SENDCLOUD_PUBLIC, Config.SENDCLOUD_SECRET)
+        
+        for key in ["order_number", "external_order_id", "external_shipment_id"]:
+            logger.info(f"Searching shipment with {key}={order_number}")
+            response = requests.get(url, auth=auth, params={key: str(order_number)}, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("results"):
+                    logger.info(f"Found shipment using {key}")
+                    return data["results"][0]
+            else:
+                logger.warning(f"Request failed for {key}: {response.status_code}")
+                
+        logger.warning(f"No shipment found for order {order_number}")
+        return None
+        
+    except Exception as e:
+        logger.error(f"Error fetching shipment data: {e}")
+        return None
 
-        # Combine and encode credentials
-        credentials = f"{SENDCLOUD_PUBLIC_KEY}:{SENDCLOUD_SECRET_KEY}"
-        encoded_credentials = base64.b64encode(credentials.encode("utf-8")).decode("utf-8")
-
-        # Prepare headers with authentication
-        headers = {
-            "Authorization": f"Basic {encoded_credentials}",
-            "Content-Type": "application/json"
-        }
-
-        # Prepare the payload for creating labels
+def prepare_parcel_payload(shipment: Dict, order_meta: Dict) -> Optional[Dict]:
+    """Prepare the parcel payload with correct service point handling."""
+    try:
+        is_sp = shipment.get('to_service_point') is not None
+        
+        # Base payload
         payload = {
-            "parcels": []
+            "parcels": [{
+                "request_label": True,
+                "apply_shipping_rules": True,
+                "order_number": shipment["order_number"],
+                "name": shipment["name"],
+                "company_name": shipment.get("company_name", ""),
+                "email": shipment["email"],
+                "shipment": {"id": shipment["shipping_method"]},  # Use SendCloud's shipping method
+                "shipment_uuid": shipment["shipment_uuid"],
+                "length": "30",
+                "width": "20",
+                "height": "10",
+                "weight": str(max(float(shipment.get("weight", 0.5)), Config.MIN_WEIGHT)),
+                "customs_shipment_type": 1,
+                "customs_invoice_nr": shipment["order_number"],
+                "parcel_items": []
+            }]
         }
 
-        # Add each order ID to the payload
-        for order_id in order_ids:
-            # Fetch order details from WooCommerce
-            order = wcapi.get(f"orders/{order_id}").json()
+        # Handle service point deliveries
+        if is_sp:
+            # Fallback to customer address if service point data is incomplete
+            service_point_city = shipment.get("service_point_city") or order_meta['shipping']['city']
+            service_point_postal_code = shipment.get("service_point_postal_code") or order_meta['shipping']['postcode']
+            service_point_address = shipment.get("service_point_address") or f"Service Point {shipment['to_service_point']}"
+            
+            if not service_point_city or not service_point_postal_code:
+                logger.error(f"Incomplete service point data for order {shipment['order_number']}")
+                return None
 
-            # Extract customer details
-            billing_info = order.get("billing", {})
-            name = billing_info.get("first_name", "") + " " + billing_info.get("last_name", "")
-            address = billing_info.get("address_1", "")
-            city = billing_info.get("city", "")
-            postal_code = billing_info.get("postcode", "")
-            country = billing_info.get("country", "")
-
-            # Add parcel to payload
-            payload["parcels"].append({
-                "order_number": str(order_id),  # Use the order ID as the order number
-                "name": name,  # Customer name
-                "address": address,  # Customer address
-                "city": city,  # Customer city
-                "postal_code": postal_code,  # Customer postal code
-                "country": country,  # Customer country code
-                "request_label": True  # Request a label to be generated
+            payload["parcels"][0].update({
+                "to_service_point": shipment["to_service_point"],
+                "to_post_number": shipment.get("to_post_number", ""),
+                "address": service_point_address,
+                "house_number": "0",
+                "postal_code": service_point_postal_code,
+                "city": service_point_city,
+                "country": shipment.get("service_point_country", "NL"),
+                "is_service_point": True
+            })
+        else:
+            # Regular delivery
+            payload["parcels"][0].update({
+                "address": shipment["address"],
+                "house_number": shipment["house_number"],
+                "postal_code": shipment["postal_code"],
+                "city": shipment["city"],
+                "country": shipment["country"]
             })
 
-        # Make the API request to create labels
-        response = requests.post(endpoint, headers=headers, data=json.dumps(payload))
+        # Add phone number
+        if shipment.get("telephone"):
+            payload["parcels"][0]["telephone"] = shipment["telephone"]
 
-        # Check if the request was successful
-        if response.status_code == 200:
-            labels = response.json().get("labels", [])
-            if labels:
-                label_urls = [label.get("label_url") for label in labels if label.get("label_url")]
-                if label_urls:
-                    messagebox.showinfo("Success", f"Labels created successfully!\nLabel URLs: {', '.join(label_urls)}")
-                else:
-                    messagebox.showinfo("Info", "Labels were created, but no label URLs were returned.")
-            else:
-                messagebox.showerror("Error", "No labels were created.")
-        else:
-            error_message = response.json().get("error", {}).get("message", "Unknown error occurred.")
-            messagebox.showerror("Error", f"Failed to create labels: {error_message}")
+        # Add parcel items
+        for item in shipment.get("parcel_items", []):
+            if all(k in item for k in ["description", "quantity"]):
+                payload["parcels"][0]["parcel_items"].append({
+                    "description": item["description"],
+                    "quantity": item["quantity"],
+                    "weight": str(max(float(item.get("weight", 0.1)), Config.MIN_WEIGHT)),
+                    "value": item.get("value", "0.00"),
+                    "hs_code": Config.DEFAULT_HS_CODE,
+                    "origin_country": Config.DEFAULT_ORIGIN_COUNTRY,
+                    "sku": item.get("sku", ""),
+                    "product_id": item.get("product_id", "")
+                })
+
+        logger.debug(f"Final payload: {json.dumps(payload, indent=2)}")
+        return payload
 
     except Exception as e:
-        messagebox.showerror("Error", f"An error occurred while creating labels: {e}")
+        logger.error(f"Error preparing payload: {e}")
+        return None
 
-# Function to retrieve existing labels from SendCloud
-def retrieve_labels_sendcloud(order_ids):
-    """
-    Retrieve label URLs for existing orders in SendCloud.
-    """
+def fulfill_order_with_label(shipment: Dict, order_meta: Dict) -> Optional[str]:
+    """Create parcel and request label in Sendcloud."""
     try:
-        # Endpoint for fetching existing shipments
-        endpoint = f"{SENDCLOUD_API_URL}shipments"
+        url = "https://panel.sendcloud.sc/api/v2/parcels"
+        auth = (Config.SENDCLOUD_PUBLIC, Config.SENDCLOUD_SECRET)
+        
+        # Prepare the payload with validation
+        parcel_payload = prepare_parcel_payload(shipment, order_meta)
+        if not parcel_payload:
+            logger.error("Failed to prepare valid payload")
+            return None
 
-        # Combine and encode credentials
-        credentials = f"{SENDCLOUD_PUBLIC_KEY}:{SENDCLOUD_SECRET_KEY}"
-        encoded_credentials = base64.b64encode(credentials.encode("utf-8")).decode("utf-8")
+        logger.info(f"Creating label for order {shipment['order_number']}")
+        response = requests.post(
+            url,
+            auth=auth,
+            json=parcel_payload,
+            headers={"Content-Type": "application/json"},
+            timeout=30
+        )
 
-        # Prepare headers with authentication
-        headers = {
-            "Authorization": f"Basic {encoded_credentials}",
-            "Content-Type": "application/json"
-        }
-
-        # Fetch existing shipments from SendCloud
-        response = requests.get(endpoint, headers=headers)
-        response.raise_for_status()
-
-        # Parse the response
-        shipments = response.json().get("shipments", [])
-
-        # Check if the orders exist in SendCloud
-        existing_labels = []
-        for order_id in order_ids:
-            for shipment in shipments:
-                if str(order_id) == shipment.get("order_number"):
-                    label_url = shipment.get("label_url")
-                    if label_url:
-                        existing_labels.append((order_id, label_url))
-                    break
-
-        # Display results to the user
-        if existing_labels:
-            label_info = "\n".join([f"Order {order_id}: {label_url}" for order_id, label_url in existing_labels])
-            messagebox.showinfo("Existing Labels", f"Labels found for the following orders:\n{label_info}")
+        if response.status_code == 200:
+            parcel_data = response.json()["parcels"][0]
+            label_url = parcel_data.get("label", {}).get("normal_printer", [None])[0]
+            
+            if label_url:
+                logger.info(f"✅ Label created for order {shipment['order_number']}")
+                logger.info(f"🔗 Label URL: {label_url}")
+                return label_url
+            else:
+                logger.warning("⚠️ Parcel created but no label URL returned")
         else:
-            messagebox.showinfo("No Labels Found", "No existing labels were found for the provided orders.")
-
+            logger.error(f"❌ Failed to create parcel: {response.status_code}")
+            logger.error(f"Error details: {response.text}")
+            logger.error(f"Payload sent: {parcel_payload}")
+        
+        return None
+        
     except Exception as e:
-        messagebox.showerror("Error", f"An error occurred while retrieving labels: {e}")
+        logger.error(f"🔥 Unexpected error during fulfillment: {e}")
+        return None
 
-# GUI Application
-class App:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Order Management")
-        self.root.geometry("400x200")
-
-        self.label = tk.Label(root, text="Select an option to manage orders:")
-        self.label.pack(pady=10)
-
-        self.create_labels_button = tk.Button(root, text="Create Labels in SendCloud", command=self.create_labels)
-        self.create_labels_button.pack(pady=10)
-
-        self.retrieve_labels_button = tk.Button(root, text="Retrieve Labels from SendCloud", command=self.retrieve_labels)
-        self.retrieve_labels_button.pack(pady=10)
-
-        self.fetch_button = tk.Button(root, text="Fetch and Save Orders", command=self.fetch_and_save_orders)
-        self.fetch_button.pack(pady=10)
-
-    def create_labels(self):
-        order_ids = self.get_order_ids()
-        if order_ids:
-            create_labels_sendcloud(order_ids)
-
-    def retrieve_labels(self):
-        order_ids = self.get_order_ids()
-        if order_ids:
-            retrieve_labels_sendcloud(order_ids)
-
-    def fetch_and_save_orders(self):
-        try:
-            orders = fetch_processing_orders(store_url, consumer_key, consumer_secret)
-            product_ids = list({item['product_id'] for order in orders for item in order.get('line_items', [])})
-            product_details = fetch_product_details_in_batches(product_ids, store_url, consumer_key, consumer_secret)
-            filtered_orders = filter_orders(orders, product_details, preorder_category_id)
-
-            workbook = prepare_data_for_excel(filtered_orders, [])
-            save_excel_file(workbook, xlsx_file_path)
-            open_excel_file(xlsx_file_path)
-            messagebox.showinfo("Success", "Orders fetched and saved successfully!")
-        except Exception as e:
-            messagebox.showerror("Error", f"An error occurred: {e}")
-
-    def get_order_ids(self):
-        # Implement logic to get order IDs from the Excel file or GUI input
-        return [123, 456]  # Placeholder, replace with actual logic
+def main():
+    try:
+        # Fetch and process orders
+        orders = fetch_processing_orders()
+        product_ids = list({item['product_id'] for order in orders for item in order.get('line_items', [])})
+        product_details = fetch_product_details(product_ids)
+        filtered_orders = filter_orders(orders, product_details)
+        
+        # Generate Excel report
+        workbook = prepare_excel(filtered_orders)
+        save_and_open_excel(workbook, Config.XLSX_FILE_PATH)
+        
+        # Process shipments
+        logger.info("\nStarting fulfillment of shipments via Sendcloud...\n")
+        successful_fulfillments = 0
+        
+        for order, _, _ in filtered_orders:
+            order_number = str(order["number"])
+            shipment = fetch_shipment_data(order_number)
+            
+            if shipment:
+                # Add phone number from WooCommerce order to shipment data
+                shipment["telephone"] = order.get("billing", {}).get("phone", "")
+                
+                label_url = fulfill_order_with_label(shipment, order)
+                if label_url:
+                    successful_fulfillments += 1
+        
+        logger.info(f"\nFulfillment completed. Successfully processed {successful_fulfillments}/{len(filtered_orders)} orders")
+        logger.info("Script completed successfully")
+        
+    except Exception as e:
+        logger.error(f"Script failed: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = App(root)
-    root.mainloop()
+    main()
